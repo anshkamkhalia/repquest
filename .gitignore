@@ -1,0 +1,63 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Expo / React Native
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+/ios
+/android
+
+# debug / logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+logs/
+
+# OS
+.DS_Store
+*.pem
+Thumbs.db
+Desktop.ini
+
+# env
+.env
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# editor / tooling
+.claude/
+.cursor/
+.idea/
+.vscode/*.log
+
+# Python / ML (local only — do not commit venv or raw data)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+/venv
+/video_data
+/data
+data.zip
+/archive
+
+example
+
+/rep_data

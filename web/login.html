@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log in — RepQuest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="repquest-theme.css" />
+  <script src="repquest-theme.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="logo" href="index.html">Rep<strong>Quest</strong></a>
+    <div class="nav-right">
+      <a class="nav-link" href="index.html">Home</a>
+      <a class="nav-link" href="leaderboard.html">Leaderboard</a>
+      <a class="nav-link active" href="login.html">Log in</a>
+      <a class="nav-link" href="signup.html">Sign up</a>
+      <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <main class="auth-page">
+    <div class="auth-card">
+      <span class="section-label">Welcome back</span>
+      <h1 class="auth-title">Log <span class="accent">in</span></h1>
+      <p class="auth-sub">Pick up your streak, check your rank, and jump into your next quest.</p>
+
+      <form class="auth-form" id="loginForm" novalidate>
+        <div class="field">
+          <label for="email">Email or username</label>
+          <input type="text" id="email" name="email" placeholder="you@example.com" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div class="field-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="remember" />
+            Remember me
+          </label>
+          <span class="text-link" title="Coming soon">Forgot password?</span>
+        </div>
+        <button type="submit" class="btn-submit">Log in</button>
+        <p class="coming-soon" id="comingSoon">Authentication is coming soon — UI only for now.</p>
+      </form>
+
+      <p class="auth-footer">
+        New to RepQuest? <a href="signup.html">Create an account</a>
+      </p>
+    </div>
+  </main>
+
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      document.getElementById('comingSoon').classList.add('show');
+    });
+  </script>
+</body>
+</html>

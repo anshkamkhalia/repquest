@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leaderboard — RepQuest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="repquest-theme.css" />
+  <script src="repquest-theme.js"></script>
+</head>
+<body>
+  <nav>
+    <a class="logo" href="index.html">Rep<strong>Quest</strong></a>
+    <div class="nav-right">
+      <a class="nav-link" href="index.html">Home</a>
+      <a class="nav-link active" href="leaderboard.html">Leaderboard</a>
+      <a class="nav-link" href="login.html">Log in</a>
+      <a class="nav-link" href="signup.html">Sign up</a>
+      <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <main class="page">
+    <div class="container fade-in">
+      <header class="page-header">
+        <span class="section-label">Global rankings</span>
+        <h1 class="page-title">Points <span class="accent">Leaderboard</span></h1>
+        <p class="page-sub">Every rep earns points. Climb the ranks, protect your streak, and chase Legend status.</p>
+      </header>
+
+      <div class="stats-bar" id="statsBar"></div>
+      <div class="podium" id="podium"></div>
+
+      <div class="board">
+        <div class="board-head">
+          <span>Rank</span>
+          <span>Player</span>
+          <span style="text-align:right">Points</span>
+          <span style="text-align:right">Streak</span>
+          <span style="text-align:right">Tier</span>
+        </div>
+        <div id="boardRows"></div>
+      </div>
+
+      <p class="board-note">No account yet? <a href="signup.html">Sign up</a> — your rank will appear here once accounts are live.</p>
+    </div>
+  </main>
+
+  <footer>
+    <a class="footer-logo" href="index.html">Rep<strong>Quest</strong></a>
+    <p>© 2026 RepQuest. Every rep counts.</p>
+  </footer>
+
+  <script src="repquest-data.js"></script>
+  <script src="repquest-icons.js"></script>
+  <script>
+    function renderLeaderboard() {
+      const users = getLeaderboardUsers();
+      const total = users.length;
+      const topPoints = users[0]?.points || 0;
+      const avgPoints = Math.round(users.reduce((s, u) => s + u.points, 0) / total);
+
+      document.getElementById('statsBar').innerHTML = `
+        <div class="stat-card"><div class="stat-num">${total}</div><div class="stat-lbl">Active players</div></div>
+        <div class="stat-card"><div class="stat-num">${formatPoints(topPoints)}</div><div class="stat-lbl">Top score</div></div>
+        <div class="stat-card"><div class="stat-num">${formatPoints(avgPoints)}</div><div class="stat-lbl">Average points</div></div>
+      `;
+
+      const podiumOrder = [users[1], users[0], users[2]].filter(Boolean);
+      const podiumClasses = ['second', 'first', 'third'];
+      const podiumLabels = ['2nd', '1st', '3rd'];
+
+      document.getElementById('podium').innerHTML = podiumOrder.map((user, i) => `
+        <div class="podium-slot ${podiumClasses[i]}">
+          <div class="podium-rank">${podiumLabels[i]}</div>
+          <div class="avatar">${getInitials(user.username)}</div>
+          <div class="podium-name">${user.username}</div>
+          <div class="podium-points">${formatPoints(user.points)}</div>
+          <div class="podium-meta">${rqStreak(user.streak)} day streak</div>
+        </div>
+      `).join('');
+
+      document.getElementById('boardRows').innerHTML = users.map((user, i) => {
+        const rank = i + 1;
+        const tier = getRankTier(rank, total);
+        const isYou = user.username === 'You';
+        return `
+          <div class="board-row${isYou ? ' highlight' : ''}">
+            <span class="rank-num${rank <= 3 ? ' top' : ''}">#${rank}</span>
+            <div class="user-cell">
+              <div class="avatar">${getInitials(user.username)}</div>
+              <span class="user-name">${user.username}${isYou ? ' (you)' : ''}</span>
+            </div>
+            <span class="cell-points">${formatPoints(user.points)}</span>
+            <span class="cell-streak cell-muted rq-inline-icon">${rqStreak(user.streak)}</span>
+            <span class="cell-tier tier-badge ${tier.className}">${tier.label}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    renderLeaderboard();
+  </script>
+</body>
+</html>
