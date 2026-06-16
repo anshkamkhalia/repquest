@@ -47,6 +47,15 @@
   color: var(--text-2);
   animation: fadeUp .5s var(--ease) .14s both;
 }
+.hero-exercises {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  animation: fadeUp .5s var(--ease) .18s both;
+}
 .hero-btns {
   display: flex;
   flex-wrap: wrap;
@@ -297,7 +306,7 @@ section { position: relative; z-index: 1; padding: 80px 24px; }
 
 .points-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
   margin-top: 40px;
 }
