@@ -1,8 +1,8 @@
 from src.universal_trainer import Exercise
-from src.pushup.model import Pushup
+from src.pushup.model import build_pushup_model
 import tensorflow as tf
 
-model = Pushup()
+model = build_pushup_model()
 optimizer = tf.keras.optimizers.Adam(1e-3)
 epochs = 100
 batch_size = 16

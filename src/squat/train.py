@@ -1,8 +1,8 @@
 from src.universal_trainer import Exercise
-from src.squat.model import Squat
+from src.squat.model import build_squat_model
 import tensorflow as tf
 
-model = Squat()
+model = build_squat_model()
 optimizer = tf.keras.optimizers.Adam(1e-3)
 epochs = 100
 batch_size = 16

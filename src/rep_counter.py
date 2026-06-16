@@ -113,6 +113,7 @@ class RepCounter:
                         self.wait_over = False
                         self.wait_frames_remaining = self.WAIT_FRAMES
                         self.n_reps += 1
+                        print(self.n_reps)
                 
                 else:
                     self.wait_frames_remaining -= 1
@@ -130,3 +131,7 @@ class RepCounter:
             return self.n_reps
         else:
             return self.n_reps, pose
+        
+# counter = RepCounter("pushup")
+# reps = counter.count_reps(0, True, False)
+# print(reps)

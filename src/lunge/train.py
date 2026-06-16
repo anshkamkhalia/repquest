@@ -1,8 +1,8 @@
 from src.universal_trainer import Exercise
-from src.lunge.model import Lunge
+from src.lunge.model import build_lunge_model
 import tensorflow as tf
 
-model = Lunge()
+model = build_lunge_model()
 optimizer = tf.keras.optimizers.Adam(1e-3)
 epochs = 100
 batch_size = 16
