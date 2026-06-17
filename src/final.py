@@ -1,4 +1,9 @@
+# final analysis script
+# refer to this
+# ground truth for everything
 
+# rep counter for counting reps (wow)
+# lunge/pushup models for evaluation, squat just uses rep counting
 
 import tensorflow as tf
 import cv2 as cv
