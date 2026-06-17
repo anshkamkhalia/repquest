@@ -34,7 +34,14 @@
             "imageWidth": 76
           }
         }
-      ]
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "RepQuest uses your front camera to check your exercise form during a quest."
+        }
+      ],
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,

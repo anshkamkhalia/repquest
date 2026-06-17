@@ -32,9 +32,13 @@ logs/
 Thumbs.db
 Desktop.ini
 
-# env
+# env / secrets
 .env
-.env*.local
+.env*
+!.env.example
+*.keystore
+google-services.json
+GoogleService-Info.plist
 
 # typescript
 *.tsbuildinfo
@@ -61,3 +65,6 @@ data.zip
 example
 
 /rep_data
+
+# leftover nested Expo project (not part of this app)
+/repquest/
