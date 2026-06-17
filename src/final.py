@@ -1,25 +1,13 @@
-# instead of counting reps with the rep counter (sounds stupid but wait)
-# we count all reps, even if they are bad (use more lenient angles)
-# evaluate quality by using the feedback model
-# good rep means we increase rep counter
-# bad rep means we use that as feedback add a partial amount
 
-# FINAL WORKING VERSION
-# GROUND TRUTH FOR EVERYTHING
-
-# squats dont use ML anymore, uses a threshold only for counting reps due to binary classification
-# pushups and lunges both use ML for detecting more complex variations
-
-# partial lunges are a bit questionable
 
 import tensorflow as tf
 import cv2 as cv
 import numpy as np
 from src.universal_trainer import Exercise
 import mediapipe as mp
+from collections import Counter
 
 from src.pushup.model import Pushup
-from src.squat.model import Squat
 from src.lunge.model import Lunge
 
 class TimedFeedback:
@@ -200,8 +188,11 @@ class TimedFeedback:
         if show_frame:
             cv.destroyAllWindows()
 
-        return f"completed {self.n_reps} reps. Last feedback: {self.last_feedback}"
-
+        return {
+            "reps": self.n_reps,
+            "quality": None,
+            "issue": None,
+        }
     
     def run_on_video(self, path, exercise: str, show_frame: bool) -> str:
 
@@ -248,6 +239,7 @@ class TimedFeedback:
         frame_idx = 0
 
         buffer = []
+        self.predictions = []
 
         self.exercise_utils = Exercise(exercise, model=None, on_colab=False)
 
@@ -298,21 +290,21 @@ class TimedFeedback:
                         self.initial, self.low, self.back_up = False, False, False
                         self.wait_over = False
                         self.wait_frames_remaining = self.WAIT_FRAMES
-
-                        # rep is detected -> run feedback model
-                        prediction, buffer = self.run_feedback_model( # get prediction
-                            buffer=buffer,
-                        )
-
-                        self.score += self.score_map.get(prediction, 0.5)
-                        self.n_reps += 1 if "good" in prediction else 0
-
-                        self.last_feedback = prediction # store for on-screen display
+                        self.n_reps += 1 # increment reps
 
                 else:
                     self.wait_frames_remaining -= 1
                     if self.wait_frames_remaining == 0:
                         self.wait_over = True
+
+                if len(buffer) >= self.SEQ_LEN:
+                        prediction, buffer = self.run_feedback_model( # get prediction
+                            buffer=buffer,
+                        )
+                        self.predictions.append(prediction)
+
+                        self.score += self.score_map.get(prediction, 0.5)
+                        self.last_feedback = prediction # store for on-screen display
 
                 if show_frame:
                     self.draw_overlay(frame)
@@ -326,4 +318,34 @@ class TimedFeedback:
         if show_frame:
             cv.destroyAllWindows()
 
-        return f"completed {self.n_reps} reps | score: {self.score}"
+        bad_preds = [p for p in self.predictions if "good" not in p]
+        self.most_common_issue = None
+        
+        if bad_preds:
+            self.most_common_issue = Counter(bad_preds).most_common(1)[0][0]
+        else:
+            self.most_common_issue = "none"
+
+        self.quality_score = (
+            self.score / len(self.predictions)
+            if self.predictions
+            else 0
+        )
+
+        return {
+            "reps": self.n_reps,
+            "quality": self.quality_score,
+            "issue": self.most_common_issue
+        }
+    
+import sys
+x = TimedFeedback()
+result = x.run_on_video(
+    0,
+    exercise=sys.argv[1],
+    show_frame=True
+)
+
+print(result["reps"])
+print(result["quality"])
+print(result["issue"])
