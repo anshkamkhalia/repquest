@@ -11,25 +11,6 @@
   padding: 110px 24px 72px;
   gap: 24px;
 }
-.hero-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--accent-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-2);
-  animation: fadeUp .5s var(--ease) both;
-}
-.pill-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-}
 .hero h1 {
   font-family: var(--font-mono);
   font-size: clamp(2.5rem, 7vw, 4.5rem);
