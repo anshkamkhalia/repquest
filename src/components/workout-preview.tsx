@@ -1,7 +1,7 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -21,7 +21,6 @@ import { STREAK_THRESHOLD } from '@/constants/workout-rules';
 import { useUser, type QuestResult } from '@/lib/user-context';
 
 const REP_TICK_MS = 1100;
-const HOLD_TICK_MS = 1000;
 
 type Phase = 'active' | 'success' | 'rejected';
 
@@ -31,19 +30,16 @@ function statusColor(status: FeedbackStatus): string {
       return Brand.good;
     case 'incorrect':
       return Brand.bad;
-    case 'reset':
-      return Brand.warn;
     default:
       return Brand.textSecondary;
   }
 }
 
 // Weighted random "prediction" standing in for the on-device model output.
+// TODO: replace with real on-device pose detection + tflite inference (see
+// the web build's workout-preview.web.tsx for the real pipeline this mirrors).
 function predict(): FeedbackStatus {
-  const r = Math.random();
-  if (r < 0.62) return 'correct';
-  if (r < 0.9) return 'incorrect';
-  return 'reset';
+  return Math.random() < 0.7 ? 'correct' : 'incorrect';
 }
 
 function asExercise(value: string | string[] | undefined): ExerciseId {
@@ -73,7 +69,6 @@ export function WorkoutPreview() {
   const difficulty = asDifficulty(params.difficulty);
   const quest = useMemo(() => buildQuest(exercise, difficulty), [exercise, difficulty]);
   const config = EXERCISE_CONFIG[exercise];
-  const isHold = quest.kind === 'hold';
 
   const { completeQuest } = useUser();
   const [permission, requestPermission] = useCameraPermissions();
@@ -101,23 +96,6 @@ export function WorkoutPreview() {
   useEffect(() => {
     if (phase !== 'active' || !running) return undefined;
 
-    if (isHold) {
-      const id = setInterval(() => {
-        const next = predict();
-        if (next === 'reset') {
-          setStatus('reset');
-          setCount(0);
-          pickTip();
-          haptic('warn');
-        } else {
-          setStatus('correct');
-          setTip(null);
-          setCount((prev) => prev + 1);
-        }
-      }, HOLD_TICK_MS);
-      return () => clearInterval(id);
-    }
-
     const id = setInterval(() => {
       const next = predict();
       setStatus(next);
@@ -134,7 +112,7 @@ export function WorkoutPreview() {
       }
     }, REP_TICK_MS);
     return () => clearInterval(id);
-  }, [phase, running, isHold, quest.target, pickTip]);
+  }, [phase, running, quest.target, pickTip]);
 
   const onDone = useCallback(() => {
     if (phase !== 'active') return;
@@ -151,7 +129,6 @@ export function WorkoutPreview() {
   }, [phase, count, quest.target, quest.points, completeQuest]);
 
   const progress = Math.min(count / quest.target, 1);
-  const unitLabel = isHold ? 'sec' : 'reps';
 
   const headline =
     phase === 'success'
@@ -159,9 +136,7 @@ export function WorkoutPreview() {
       : phase === 'rejected'
         ? 'Not enough reps'
         : reached
-          ? isHold
-            ? 'Hold complete — press done'
-            : 'Target hit — press done'
+          ? 'Target hit — press done'
           : config.messages[status];
 
   const headlineLabel =
@@ -169,6 +144,8 @@ export function WorkoutPreview() {
 
   const headlineColor =
     phase === 'success' ? Brand.good : phase === 'rejected' ? Brand.bad : reached ? Brand.good : accent;
+
+  const showCamPrompt = cameraReady && !permission?.granted;
 
   return (
     <View style={styles.root}>
@@ -196,36 +173,34 @@ export function WorkoutPreview() {
           </Pressable>
         </View>
 
-        {cameraReady && !permission?.granted ? (
+        {showCamPrompt ? (
           <Pressable style={styles.camPrompt} onPress={requestPermission}>
             <Text style={styles.camPromptText}>Enable front camera for live form tracking</Text>
           </Pressable>
         ) : (
-          <View />
-        )}
-
-        <View style={styles.feedbackWrap}>
-          <View style={[styles.feedbackCard, { borderColor: headlineColor, shadowColor: headlineColor }]}>
-            <Text style={[styles.feedbackLabel, { color: headlineColor }]}>{headlineLabel}</Text>
-            <Text style={styles.feedbackMessage}>{headline}</Text>
-            {tip && phase === 'active' && !reached ? <Text style={styles.tipText}>Tip: {tip}</Text> : null}
-            {phase === 'success' && result ? (
-              <Text style={styles.feedbackPoints}>
-                +{result.pointsAdded} pts{result.streakExtended ? ' · streak extended' : ''}
-              </Text>
-            ) : null}
-            {phase === 'rejected' ? (
-              <Text style={styles.rejectText}>
-                We only counted {count} of {quest.target} {unitLabel}. Finish the set to bank it.
-              </Text>
-            ) : null}
+          <View style={styles.feedbackWrap}>
+            <View style={[styles.feedbackCard, { borderColor: headlineColor, shadowColor: headlineColor }]}>
+              <Text style={[styles.feedbackLabel, { color: headlineColor }]}>{headlineLabel}</Text>
+              <Text style={styles.feedbackMessage}>{headline}</Text>
+              {tip && phase === 'active' && !reached ? <Text style={styles.tipText}>Tip: {tip}</Text> : null}
+              {phase === 'success' && result ? (
+                <Text style={styles.feedbackPoints}>
+                  +{result.pointsAdded} pts{result.streakExtended ? ' · streak extended' : ''}
+                </Text>
+              ) : null}
+              {phase === 'rejected' ? (
+                <Text style={styles.rejectText}>
+                  We only counted {count} of {quest.target} reps. Finish the set to bank it.
+                </Text>
+              ) : null}
+            </View>
           </View>
-        </View>
+        )}
 
         <View style={styles.bottomCard}>
           <View style={styles.repRow}>
             <Text style={styles.repCount}>{count}</Text>
-            <Text style={styles.repTarget}>/ {quest.target} {unitLabel}</Text>
+            <Text style={styles.repTarget}>/ {quest.target} reps</Text>
           </View>
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: headlineColor }]} />
@@ -243,7 +218,7 @@ export function WorkoutPreview() {
               <Text style={styles.doneHint}>
                 {reached
                   ? 'Nice work — tap finish to bank your points.'
-                  : `${quest.target - count} more ${unitLabel} to earn the points.`}
+                  : `${quest.target - count} more reps to earn the points.`}
               </Text>
             </>
           )}

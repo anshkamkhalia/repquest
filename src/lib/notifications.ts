@@ -31,8 +31,7 @@ export function questUrl(quest: Quest): string {
 
 export function questNotificationBody(quest: Quest): string {
   const config = EXERCISE_CONFIG[quest.exercise];
-  const unit = config.unit === 'sec' ? `${quest.target} sec` : `${quest.target} reps`;
-  return `${unit} · ${config.title}. Tap to start your quest.`;
+  return `${quest.target} reps · ${config.title}. Tap to start your quest.`;
 }
 
 export async function requestNotificationsPermission(): Promise<boolean> {

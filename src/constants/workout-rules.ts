@@ -1,13 +1,11 @@
-export type ExerciseId = 'pushup' | 'squat' | 'lunge' | 'plank';
+export type ExerciseId = 'pushup' | 'squat' | 'lunge';
 
-export type FeedbackStatus = 'idle' | 'correct' | 'incorrect' | 'reset';
+export type FeedbackStatus = 'idle' | 'correct' | 'incorrect';
 
 export type FeedbackState = {
   status: FeedbackStatus;
   message: string;
 };
-
-export type ExerciseKind = 'reps' | 'hold';
 
 export type Difficulty = 'easy' | 'medium' | 'hard';
 
@@ -28,8 +26,6 @@ type Level = { target: number; points: number };
 
 type ExerciseConfig = {
   title: string;
-  kind: ExerciseKind;
-  unit: string;
   messages: Record<FeedbackStatus, string>;
   tips: string[];
   levels: Record<Difficulty, Level>;
@@ -38,13 +34,10 @@ type ExerciseConfig = {
 export const EXERCISE_CONFIG: Record<ExerciseId, ExerciseConfig> = {
   pushup: {
     title: 'Push-ups',
-    kind: 'reps',
-    unit: 'reps',
     messages: {
       idle: 'Line up with the camera',
       correct: 'Clean rep',
       incorrect: 'Hips sagging — brace your core',
-      reset: 'Position lost — reset',
     },
     tips: ['Keep your hips level with your shoulders', 'Lower until elbows hit 90°', 'Full lockout at the top'],
     levels: {
@@ -55,13 +48,10 @@ export const EXERCISE_CONFIG: Record<ExerciseId, ExerciseConfig> = {
   },
   squat: {
     title: 'Squats',
-    kind: 'reps',
-    unit: 'reps',
     messages: {
       idle: 'Line up with the camera',
       correct: 'Clean rep',
       incorrect: 'Drop lower — hit depth',
-      reset: 'Position lost — reset',
     },
     tips: ['Hit at least parallel depth', 'Keep your knees tracking over your toes', 'Chest up, weight in your heels'],
     levels: {
@@ -72,13 +62,10 @@ export const EXERCISE_CONFIG: Record<ExerciseId, ExerciseConfig> = {
   },
   lunge: {
     title: 'Lunges',
-    kind: 'reps',
-    unit: 'reps',
     messages: {
       idle: 'Line up with the camera',
       correct: 'Clean rep',
       incorrect: 'Keep your torso upright',
-      reset: 'Position lost — reset',
     },
     tips: ['Front knee stays over your ankle', 'Drop your back knee toward the floor', 'Keep your torso tall'],
     levels: {
@@ -87,26 +74,9 @@ export const EXERCISE_CONFIG: Record<ExerciseId, ExerciseConfig> = {
       hard: { target: 20, points: 30 },
     },
   },
-  plank: {
-    title: 'Plank',
-    kind: 'hold',
-    unit: 'sec',
-    messages: {
-      idle: 'Get into plank position',
-      correct: 'Hold steady',
-      incorrect: 'Straighten your back',
-      reset: 'Out of position — timer reset',
-    },
-    tips: ['Keep a straight line from head to heels', "Don't let your hips drop or pike up", 'Brace your core the whole time'],
-    levels: {
-      easy: { target: 30, points: 10 },
-      medium: { target: 60, points: 20 },
-      hard: { target: 120, points: 30 },
-    },
-  },
 };
 
-export const EXERCISE_IDS: ExerciseId[] = ['pushup', 'squat', 'lunge', 'plank'];
+export const EXERCISE_IDS: ExerciseId[] = ['pushup', 'squat', 'lunge'];
 
 // Daily points needed to keep a streak alive.
 export const STREAK_THRESHOLD = 15;
@@ -114,10 +84,8 @@ export const STREAK_THRESHOLD = 15;
 export type Quest = {
   exercise: ExerciseId;
   difficulty: Difficulty;
-  kind: ExerciseKind;
   target: number;
   points: number;
-  unit: string;
 };
 
 export function buildQuest(exercise: ExerciseId, difficulty: Difficulty): Quest {
@@ -126,10 +94,8 @@ export function buildQuest(exercise: ExerciseId, difficulty: Difficulty): Quest 
   return {
     exercise,
     difficulty,
-    kind: config.kind,
     target: level.target,
     points: level.points,
-    unit: config.unit,
   };
 }
 

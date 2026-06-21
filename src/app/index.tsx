@@ -22,7 +22,7 @@ import { useUser } from '@/lib/user-context';
 
 function questLabel(quest: Quest): string {
   const config = EXERCISE_CONFIG[quest.exercise];
-  return config.kind === 'hold' ? `${quest.target} sec ${config.title}` : `${quest.target} ${config.title}`;
+  return `${quest.target} ${config.title}`;
 }
 
 function startQuest(quest: Quest) {
@@ -43,7 +43,6 @@ export default function HomeScreen() {
   const rank = board.findIndex((u) => u.id === 'me') + 1;
 
   const selected = buildQuest(exercise, difficulty);
-  const selectedConfig = EXERCISE_CONFIG[exercise];
   const streakLeft = Math.max(STREAK_THRESHOLD - user.pointsToday, 0);
 
   const shuffle = () => {
@@ -122,7 +121,7 @@ export default function HomeScreen() {
                     {DIFFICULTY_LABEL[d]}
                   </Text>
                   <Text style={[styles.diffChipPts, active && styles.diffChipTextActive]}>
-                    {q.target} {selectedConfig.unit} · +{q.points}
+                    {q.target} reps · +{q.points}
                   </Text>
                 </Pressable>
               );

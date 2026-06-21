@@ -1,4 +1,11 @@
+import {
+    Tensor,
+    loadAndCompile,
+    loadLiteRt,
+    type CompiledModel,
+} from "@litertjs/core";
 import type { PoseLandmarker } from "@mediapipe/tasks-vision";
+import { Asset } from "expo-asset";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,9 +25,21 @@ import {
     type ExerciseId,
 } from "@/constants/workout-rules";
 import {
+    CLASS_LABEL,
+    FEATURE_LEN,
+    GOOD_LABEL,
+    IssueTracker,
+    QualityBuffer,
+    SEQ_LEN,
+    decodeQuality,
+    extractFeatures,
+    flattenWindow,
+    type QualityExerciseId,
+    type QualityResult,
+} from "@/lib/exercise-model";
+import {
     POSE_CONNECTIONS,
     RepCounter,
-    checkPlank,
     poseVisible,
     type Landmark,
     type RepExerciseId,
@@ -40,6 +59,45 @@ type VisionModule = typeof import("@mediapipe/tasks-vision");
 const loadVision = new Function("url", "return import(url)") as (
   url: string,
 ) => Promise<VisionModule>;
+
+// Same CDN-loading pattern as the MediaPipe wasm above, pointed at the wasm
+// build LiteRT.js ships in its own package (see node_modules/@litertjs/core/wasm).
+const LITERT_VERSION = "2.5.2";
+const LITERT_WASM_CDN = `https://cdn.jsdelivr.net/npm/@litertjs/core@${LITERT_VERSION}/wasm/`;
+
+// Trained quality classifiers (pushup/lunge only — final.py skips squat's).
+const QUALITY_MODEL_ASSETS: Record<QualityExerciseId, number> = {
+  pushup: require("../../tflite_models/pushup.tflite"),
+  lunge: require("../../tflite_models/lunge.tflite"),
+};
+
+function isQualityExercise(ex: ExerciseId): ex is QualityExerciseId {
+  return ex === "pushup" || ex === "lunge";
+}
+
+let liteRtReady: Promise<unknown> | null = null;
+function ensureLiteRt(): Promise<unknown> {
+  if (!liteRtReady) liteRtReady = loadLiteRt(LITERT_WASM_CDN);
+  return liteRtReady;
+}
+
+// Compiled models are cached module-wide so switching exercises (or starting a
+// new quest) doesn't recompile the wasm graph every time.
+const compiledModels = new Map<QualityExerciseId, Promise<CompiledModel>>();
+function getQualityModel(exercise: QualityExerciseId): Promise<CompiledModel> {
+  let cached = compiledModels.get(exercise);
+  if (!cached) {
+    cached = ensureLiteRt().then(async () => {
+      const asset = Asset.fromModule(QUALITY_MODEL_ASSETS[exercise]);
+      await asset.downloadAsync();
+      return loadAndCompile(asset.localUri ?? asset.uri, {
+        accelerator: "wasm",
+      });
+    });
+    compiledModels.set(exercise, cached);
+  }
+  return cached;
+}
 
 type Setup = "loading" | "ready" | "denied" | "error";
 type Phase = "active" | "success" | "rejected";
@@ -80,7 +138,6 @@ export function WorkoutPreview() {
     [exercise, difficulty],
   );
   const config = EXERCISE_CONFIG[exercise];
-  const isHold = quest.kind === "hold";
 
   const { completeQuest } = useUser();
 
@@ -93,24 +150,25 @@ export function WorkoutPreview() {
   );
   const [phase, setPhase] = useState<Phase>("active");
   const [result, setResult] = useState<QuestResult | null>(null);
+  const [mostCommonIssue, setMostCommonIssue] = useState<string | null>(null);
+  const [livePrediction, setLivePrediction] = useState<QualityResult | null>(
+    null,
+  );
   const [restartKey, setRestartKey] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const counterRef = useRef<RepCounter | null>(null);
+  const qualityBufferRef = useRef<QualityBuffer | null>(null);
+  const qualityModelRef = useRef<CompiledModel | null>(null);
+  const issueTrackerRef = useRef<IssueTracker | null>(null);
   const rafRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastVideoTimeRef = useRef(-1);
   const finishedRef = useRef(false);
 
-  // plank timing
-  const heldMsRef = useRef(0);
-  const brokenMsRef = useRef(0);
-  const lastTsRef = useRef(0);
-
   const reached = count >= quest.target;
-  const unitLabel = isHold ? "sec" : "reps";
   const accent =
     phase === "success"
       ? Brand.good
@@ -138,6 +196,9 @@ export function WorkoutPreview() {
       if (finishedRef.current) return;
       finishedRef.current = true;
       stopCamera();
+      if (isQualityExercise(exercise)) {
+        setMostCommonIssue(issueTrackerRef.current?.mostCommonIssue() ?? null);
+      }
       if (didReach) {
         const res = completeQuest(quest.points);
         setResult(res);
@@ -148,7 +209,7 @@ export function WorkoutPreview() {
         haptic("error");
       }
     },
-    [completeQuest, quest.points, stopCamera],
+    [completeQuest, quest.points, stopCamera, exercise],
   );
 
   const drawSkeleton = useCallback((lm: Landmark[] | null) => {
@@ -192,13 +253,64 @@ export function WorkoutPreview() {
   useEffect(() => {
     let cancelled = false;
     finishedRef.current = false;
-    counterRef.current = isHold
-      ? null
-      : new RepCounter(exercise as RepExerciseId);
-    heldMsRef.current = 0;
-    brokenMsRef.current = 0;
-    lastTsRef.current = 0;
+    counterRef.current = new RepCounter(exercise as RepExerciseId);
+    qualityBufferRef.current = new QualityBuffer();
+    qualityModelRef.current = null;
+    issueTrackerRef.current = new IssueTracker();
     lastVideoTimeRef.current = -1;
+
+    if (isQualityExercise(exercise)) {
+      console.log(`[quality:${exercise}] loading model…`);
+      getQualityModel(exercise)
+        .then((model) => {
+          console.log(`[quality:${exercise}] model ready`);
+          if (!cancelled) qualityModelRef.current = model;
+        })
+        .catch((err) => {
+          // Quality model is a nice-to-have layered on the geometric rep
+          // counter above — if it fails to load, reps still count fine.
+          console.error(`[quality:${exercise}] model load failed`, err);
+        });
+    }
+
+    async function runQualityInference(
+      model: CompiledModel,
+      ex: QualityExerciseId,
+      window: Float32Array[],
+    ) {
+      console.log(`[quality:${ex}] window ready (${window.length} frames), running inference…`);
+      const input = new Tensor(flattenWindow(window), [1, SEQ_LEN, FEATURE_LEN]);
+      try {
+        const results = await model.run(input);
+        const output = results[0];
+        const data = await output.data();
+        if (!cancelled) {
+          const quality = decodeQuality(ex, data);
+          issueTrackerRef.current?.record(quality.label, GOOD_LABEL[ex]);
+          console.log(
+            `[quality:${ex}]`,
+            quality.label,
+            `${(quality.confidence * 100).toFixed(1)}%`,
+            "—",
+            quality.probs
+              .map((p) => `${p.label}=${(p.prob * 100).toFixed(1)}%`)
+              .join(" "),
+          );
+          setLivePrediction(quality);
+          setFeedback(
+            quality.message ||
+              config.messages[quality.good ? "correct" : "incorrect"],
+          );
+          setFeedbackTone(quality.good ? "good" : "bad");
+        }
+        results.forEach((t) => t.delete());
+      } catch (err) {
+        // best-effort — fall back to whatever feedback is already showing.
+        console.error(`[quality:${ex}] inference failed`, err);
+      } finally {
+        input.delete();
+      }
+    }
 
     async function start() {
       try {
@@ -278,7 +390,7 @@ export function WorkoutPreview() {
 
         if (landmarks && poseVisible(landmarks)) {
           drawSkeleton(landmarks);
-          analyze(landmarks, now);
+          analyze(landmarks);
         } else {
           drawSkeleton(null);
           if (!finishedRef.current) {
@@ -291,48 +403,41 @@ export function WorkoutPreview() {
       rafRef.current = requestAnimationFrame(loop);
     }
 
-    function analyze(lm: Landmark[], now: number) {
+    function analyze(lm: Landmark[]) {
       if (finishedRef.current) return;
-
-      if (isHold) {
-        const dt = lastTsRef.current ? now - lastTsRef.current : 0;
-        lastTsRef.current = now;
-        const { holding, message } = checkPlank(lm);
-        if (holding) {
-          brokenMsRef.current = 0;
-          heldMsRef.current += dt;
-          const secs = Math.floor(heldMsRef.current / 1000);
-          setCount(secs);
-          setFeedback(config.messages.correct);
-          setFeedbackTone("good");
-          if (secs >= quest.target) finish(true);
-        } else {
-          brokenMsRef.current += dt;
-          setFeedback(message ?? config.messages.incorrect);
-          setFeedbackTone("bad");
-          if (brokenMsRef.current > 800) {
-            heldMsRef.current = 0;
-            setCount(0);
-          }
-        }
-        return;
-      }
 
       const counter = counterRef.current;
       if (!counter) return;
       const update = counter.update(lm);
       if (update.repCompleted) {
         setCount(update.reps);
-        if (update.formBad) {
-          setFeedback(update.message ?? config.messages.incorrect);
-          setFeedbackTone("bad");
-          haptic("warn");
-        } else {
-          setFeedback(config.messages.correct);
-          setFeedbackTone("good");
-          haptic(update.reps >= quest.target ? "success" : "rep");
+        // For pushup/lunge the trained quality model (below) owns the
+        // feedback text — it updates independently every SEQ_LEN frames,
+        // same as final.py's last_feedback. Squat has no model, so it keeps
+        // the geometric form message final.py also falls back to.
+        if (!isQualityExercise(exercise)) {
+          if (update.formBad) {
+            setFeedback(update.message ?? config.messages.incorrect);
+            setFeedbackTone("bad");
+          } else {
+            setFeedback(config.messages.correct);
+            setFeedbackTone("good");
+          }
         }
+        haptic(
+          update.formBad
+            ? "warn"
+            : update.reps >= quest.target
+              ? "success"
+              : "rep",
+        );
         if (update.reps >= quest.target) finish(true);
+      }
+
+      if (isQualityExercise(exercise)) {
+        const window = qualityBufferRef.current?.push(extractFeatures(lm)) ?? null;
+        const model = qualityModelRef.current;
+        if (window && model) void runQualityInference(model, exercise, window);
       }
     }
 
@@ -346,7 +451,7 @@ export function WorkoutPreview() {
     };
     // restartKey forces a fresh session on "Try again".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exercise, isHold, quest.target, restartKey]);
+  }, [exercise, quest.target, restartKey]);
 
   const onDone = useCallback(() => {
     if (phase !== "active") return;
@@ -358,6 +463,8 @@ export function WorkoutPreview() {
     setFeedback(config.messages.idle);
     setFeedbackTone("idle");
     setResult(null);
+    setMostCommonIssue(null);
+    setLivePrediction(null);
     setPhase("active");
     setSetup("loading");
     setRestartKey((k) => k + 1);
@@ -382,12 +489,12 @@ export function WorkoutPreview() {
     phase === "success"
       ? "Quest complete"
       : phase === "rejected"
-        ? `Not enough ${unitLabel}`
+        ? "Not enough reps"
         : reached
-          ? isHold
-            ? "Hold complete"
-            : "Target hit"
+          ? "Target hit"
           : feedback;
+
+  const showIssueCard = phase !== "active" && isQualityExercise(exercise);
 
   return (
     <View style={styles.root}>
@@ -457,41 +564,95 @@ export function WorkoutPreview() {
             ) : null}
           </View>
         ) : (
-          <View />
+          <View style={styles.feedbackWrap}>
+            <View
+              style={[
+                styles.feedbackCard,
+                { borderColor: accent, shadowColor: accent },
+              ]}
+            >
+              <Text style={[styles.feedbackLabel, { color: accent }]}>
+                {headlineLabel}
+              </Text>
+              <Text style={styles.feedbackMessage}>{headline}</Text>
+              {phase === "success" && result ? (
+                <Text style={styles.feedbackPoints}>
+                  +{result.pointsAdded} pts
+                  {result.streakExtended ? " · streak extended" : ""}
+                </Text>
+              ) : null}
+              {phase === "rejected" ? (
+                <Text style={styles.rejectText}>
+                  We counted {count} of {quest.target} reps. Finish the set to
+                  bank it.
+                </Text>
+              ) : null}
+            </View>
+          </View>
         )}
 
-        <View style={styles.feedbackWrap}>
+        {showIssueCard ? (
           <View
             style={[
-              styles.feedbackCard,
-              { borderColor: accent, shadowColor: accent },
+              styles.issueCard,
+              mostCommonIssue ? styles.issueCardWarn : styles.issueCardGood,
             ]}
           >
-            <Text style={[styles.feedbackLabel, { color: accent }]}>
-              {headlineLabel}
+            <Text
+              style={[
+                styles.issueKicker,
+                { color: mostCommonIssue ? Brand.warn : Brand.good },
+              ]}
+            >
+              {mostCommonIssue ? "Most common issue" : "Form check"}
             </Text>
-            <Text style={styles.feedbackMessage}>{headline}</Text>
-            {phase === "success" && result ? (
-              <Text style={styles.feedbackPoints}>
-                +{result.pointsAdded} pts
-                {result.streakExtended ? " · streak extended" : ""}
-              </Text>
-            ) : null}
-            {phase === "rejected" ? (
-              <Text style={styles.rejectText}>
-                We counted {count} of {quest.target} {unitLabel}. Finish the set
-                to bank it.
-              </Text>
-            ) : null}
+            <Text style={styles.issueValue}>
+              {mostCommonIssue
+                ? CLASS_LABEL[mostCommonIssue] ?? mostCommonIssue
+                : "Clean form the whole set!"}
+            </Text>
           </View>
-        </View>
+        ) : null}
+
+        {phase === "active" && isQualityExercise(exercise) && livePrediction ? (
+          <View style={styles.liveCard}>
+            <Text style={styles.liveKicker}>Model output (live)</Text>
+            {livePrediction.probs.map((p) => {
+              const isTop = p.label === livePrediction.label;
+              return (
+                <View key={p.label} style={styles.liveRow}>
+                  <Text
+                    style={[styles.liveRowLabel, isTop && styles.liveRowLabelActive]}
+                    numberOfLines={1}
+                  >
+                    {CLASS_LABEL[p.label] ?? p.label}
+                  </Text>
+                  <View style={styles.liveBarTrack}>
+                    <View
+                      style={[
+                        styles.liveBarFill,
+                        {
+                          width: `${Math.round(p.prob * 100)}%`,
+                          backgroundColor: isTop
+                            ? livePrediction.good
+                              ? Brand.good
+                              : Brand.warn
+                            : Brand.borderStrong,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.livePct}>{Math.round(p.prob * 100)}%</Text>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
 
         <View style={styles.bottomCard}>
           <View style={styles.repRow}>
             <Text style={styles.repCount}>{count}</Text>
-            <Text style={styles.repTarget}>
-              / {quest.target} {unitLabel}
-            </Text>
+            <Text style={styles.repTarget}>/ {quest.target} reps</Text>
           </View>
           <View style={styles.progressTrack}>
             <View
@@ -520,9 +681,7 @@ export function WorkoutPreview() {
               <Text style={styles.doneHint}>
                 {reached
                   ? "Nice work — banking your points."
-                  : isHold
-                    ? `Hold the position for ${quest.target} seconds.`
-                    : `${quest.target - count} more ${unitLabel} to earn the points.`}
+                  : `${quest.target - count} more reps to earn the points.`}
               </Text>
             </>
           )}
@@ -679,6 +838,76 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     marginTop: 2,
+  },
+  issueCard: {
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: Brand.radiusLg,
+    borderWidth: 1.5,
+  },
+  issueCardWarn: {
+    backgroundColor: "rgba(224, 99, 69, 0.14)",
+    borderColor: Brand.warn,
+  },
+  issueCardGood: {
+    backgroundColor: "rgba(90, 154, 130, 0.14)",
+    borderColor: Brand.good,
+  },
+  issueKicker: {
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+    fontWeight: "800",
+  },
+  issueValue: {
+    color: Brand.text,
+    fontSize: 17,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  liveCard: {
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderRadius: Brand.radiusLg,
+    backgroundColor: Overlay.card,
+    borderWidth: 1,
+    borderColor: Overlay.hairline,
+  },
+  liveKicker: {
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+    color: Brand.textTertiary,
+    fontWeight: "700",
+  },
+  liveRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  liveRowLabel: {
+    width: 116,
+    color: Brand.textSecondary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  liveRowLabelActive: { color: Brand.text, fontWeight: "800" },
+  liveBarTrack: {
+    flex: 1,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "rgba(236, 233, 226, 0.1)",
+    overflow: "hidden",
+  },
+  liveBarFill: { height: "100%", borderRadius: 4 },
+  livePct: {
+    width: 38,
+    textAlign: "right",
+    fontFamily: Fonts.mono,
+    color: Brand.textSecondary,
+    fontSize: 12,
   },
   rejectText: {
     color: Brand.textSecondary,

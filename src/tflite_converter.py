@@ -26,7 +26,10 @@ for exercise in models:
     else:
         model = build_squat_model()
     model.set_weights(old_model.get_weights())
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+    fixed_input = tf.keras.Input(shape=(106, 110), batch_size=1)
+    fixed_model = tf.keras.Model(fixed_input, model(fixed_input, training=False))
+    converter = tf.lite.TFLiteConverter.from_keras_model(fixed_model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.target_spec.supported_types = [tf.float16]
     tflite_model = converter.convert()

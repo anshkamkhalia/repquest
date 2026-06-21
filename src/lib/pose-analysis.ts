@@ -1,14 +1,14 @@
 // Pose analysis ported from the Python pipeline (src/final.py, src/universal_trainer.py).
-// Rep counting uses the same angle state-machine and thresholds. Form feedback is
-// derived geometrically from the same body angles the trained models look at, so it
-// stays robust without shipping a model to the browser.
+// Rep counting uses the same angle state-machine and thresholds as final.py. Quality
+// classification (the trained pushup/lunge models) lives in exercise-model.ts, which
+// reuses the angle2/mid helpers exported below.
 
 export type Landmark = { x: number; y: number; z: number; visibility?: number };
 
 export type RepExerciseId = "pushup" | "squat" | "lunge";
 
 // MediaPipe BlazePose landmark indices.
-const IDX = {
+export const IDX = {
   lShoulder: 11,
   rShoulder: 12,
   lElbow: 13,
@@ -23,7 +23,7 @@ const IDX = {
   rAnkle: 28,
 } as const;
 
-type Pt = { x: number; y: number; z: number };
+export type Pt = { x: number; y: number; z: number };
 
 function angle3(a: Pt, b: Pt, c: Pt): number {
   const bax = a.x - b.x;
@@ -40,7 +40,7 @@ function angle3(a: Pt, b: Pt, c: Pt): number {
 }
 
 // 2D angle (x/y only) — matches extract_features which slices [:2].
-function angle2(a: Pt, b: Pt, c: Pt): number {
+export function angle2(a: Pt, b: Pt, c: Pt): number {
   const bax = a.x - b.x;
   const bay = a.y - b.y;
   const bcx = c.x - b.x;
@@ -52,7 +52,7 @@ function angle2(a: Pt, b: Pt, c: Pt): number {
   return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
 }
 
-function mid(a: Pt, b: Pt): Pt {
+export function mid(a: Pt, b: Pt): Pt {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
 }
 
@@ -207,30 +207,6 @@ export class RepCounter {
     this.waitFramesRemaining = 0;
     this.worstForm = 0;
   }
-}
-
-// Plank isn't a rep — hold a straight, roughly horizontal body. Returns whether the
-// athlete is currently holding a valid plank and a hint when they are not.
-export function checkPlank(lm: Landmark[]): {
-  holding: boolean;
-  message: string | null;
-} {
-  const midShoulder = mid(lm[IDX.lShoulder], lm[IDX.rShoulder]);
-  const midHip = mid(lm[IDX.lHip], lm[IDX.rHip]);
-  const midKnee = mid(lm[IDX.lKnee], lm[IDX.rKnee]);
-
-  const bodyLine = angle2(midShoulder, midHip, midKnee);
-  const straight = Math.abs(180 - bodyLine) < 22;
-
-  // Torso should be more horizontal than vertical when planking.
-  const dx = Math.abs(midShoulder.x - midHip.x);
-  const dy = Math.abs(midShoulder.y - midHip.y);
-  const horizontal = dx > dy * 0.8;
-
-  if (straight && horizontal) return { holding: true, message: null };
-  if (!horizontal)
-    return { holding: false, message: "Get into a plank position" };
-  return { holding: false, message: "Straighten your back — no sagging" };
 }
 
 // Minimum landmark visibility before we trust a frame.

@@ -342,15 +342,3 @@ class TimedFeedback:
             "quality": self.quality_score,
             "issue": self.most_common_issue
         }
-    
-import sys
-x = TimedFeedback()
-result = x.run_on_video(
-    0,
-    exercise=sys.argv[1],
-    show_frame=True
-)
-
-print(result["reps"])
-print(result["quality"])
-print(result["issue"])
