@@ -57,6 +57,7 @@ __pycache__/
 .venv/
 venv/
 /venv
+.tfjs_venv/
 /video_data
 /data
 data.zip
