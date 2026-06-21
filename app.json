@@ -9,7 +9,12 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.anonymous.repquest"
+      "bundleIdentifier": "com.anonymous.repquest",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera",
+        "NSCameraUseExternalDeviceType": true,
+        "NSCameraUseContinuityCameraDeviceType": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +27,8 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.anonymous.repquest"
     },
     "web": {
       "output": "static",
@@ -46,7 +52,9 @@
           "cameraPermission": "RepQuest uses your front camera to check your exercise form during a quest."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      "react-native-vision-camera",
+      "./plugins/withPoseLandmarkerModel"
     ],
     "experiments": {
       "typedRoutes": true,

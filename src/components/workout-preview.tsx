@@ -1,9 +1,18 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useTensorflowModel } from 'react-native-fast-tflite';
+import {
+  Delegate,
+  MediapipeCamera,
+  RunningMode,
+  usePoseDetection,
+  type DetectionError,
+  type PoseDetectionResultBundle,
+} from 'react-native-mediapipe';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Camera, useCameraDevice, type CameraPermissionStatus } from 'react-native-vision-camera';
 
 import { Brand, Overlay } from '@/constants/brand';
 import { Fonts } from '@/constants/theme';
@@ -12,35 +21,41 @@ import {
   DIFFICULTY_LABEL,
   EXERCISE_CONFIG,
   EXERCISE_IDS,
+  STREAK_THRESHOLD,
   buildQuest,
   type Difficulty,
   type ExerciseId,
-  type FeedbackStatus,
 } from '@/constants/workout-rules';
-import { STREAK_THRESHOLD } from '@/constants/workout-rules';
+import {
+  CLASS_LABEL,
+  GOOD_LABEL,
+  IssueTracker,
+  QualityBuffer,
+  decodeQuality,
+  extractFeatures,
+  flattenWindow,
+  type QualityExerciseId,
+  type QualityResult,
+} from '@/lib/exercise-model';
+import { RepCounter, poseVisible, type Landmark, type RepExerciseId } from '@/lib/pose-analysis';
 import { useUser, type QuestResult } from '@/lib/user-context';
 
-const REP_TICK_MS = 1100;
+// Same .task file the Python pipeline and the web build use, bundled as a
+// native resource by plugins/withPoseLandmarkerModel.js (react-native-mediapipe
+// resolves it via Bundle.main on iOS / assets/ on Android, by filename).
+const POSE_MODEL_FILE = 'pose_landmarker_full.task';
+
+// Trained quality classifiers (pushup/lunge only — final.py skips squat's).
+const QUALITY_MODEL_ASSETS: Record<QualityExerciseId, number> = {
+  pushup: require('../../tflite_models/pushup.tflite'),
+  lunge: require('../../tflite_models/lunge.tflite'),
+};
+
+function isQualityExercise(ex: ExerciseId): ex is QualityExerciseId {
+  return ex === 'pushup' || ex === 'lunge';
+}
 
 type Phase = 'active' | 'success' | 'rejected';
-
-function statusColor(status: FeedbackStatus): string {
-  switch (status) {
-    case 'correct':
-      return Brand.good;
-    case 'incorrect':
-      return Brand.bad;
-    default:
-      return Brand.textSecondary;
-  }
-}
-
-// Weighted random "prediction" standing in for the on-device model output.
-// TODO: replace with real on-device pose detection + tflite inference (see
-// the web build's workout-preview.web.tsx for the real pipeline this mirrors).
-function predict(): FeedbackStatus {
-  return Math.random() < 0.7 ? 'correct' : 'incorrect';
-}
 
 function asExercise(value: string | string[] | undefined): ExerciseId {
   const v = Array.isArray(value) ? value[0] : value;
@@ -71,64 +86,207 @@ export function WorkoutPreview() {
   const config = EXERCISE_CONFIG[exercise];
 
   const { completeQuest } = useUser();
-  const [permission, requestPermission] = useCameraPermissions();
-  const [cameraReady, setCameraReady] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<CameraPermissionStatus>(() =>
+    Camera.getCameraPermissionStatus(),
+  );
+  const hasPermission = permissionStatus === 'granted';
+  // Simulators have no physical camera, so this is `undefined` there even
+  // with permission granted — surface that distinctly instead of silently
+  // showing nothing (MediapipeCamera's own fallback is just blank text).
+  const device = useCameraDevice('front');
 
   const [count, setCount] = useState(0);
-  const [status, setStatus] = useState<FeedbackStatus>('idle');
-  const [tip, setTip] = useState<string | null>(null);
-  const [running, setRunning] = useState(true);
+  const [feedback, setFeedback] = useState<string>(config.messages.idle);
+  const [feedbackTone, setFeedbackTone] = useState<'idle' | 'good' | 'bad'>('idle');
   const [phase, setPhase] = useState<Phase>('active');
   const [result, setResult] = useState<QuestResult | null>(null);
+  const [mostCommonIssue, setMostCommonIssue] = useState<string | null>(null);
+  const [livePrediction, setLivePrediction] = useState<QualityResult | null>(null);
 
-  const accent = statusColor(status);
-  const reached = count >= quest.target;
+  const counterRef = useRef(new RepCounter(exercise as RepExerciseId));
+  const qualityBufferRef = useRef(new QualityBuffer());
+  const issueTrackerRef = useRef(new IssueTracker());
+  const finishedRef = useRef(false);
+
+  // `exercise` is fixed for this screen's lifetime (workout.tsx remounts on a
+  // new quest — see its key prop), so it's fine to always load some model
+  // here; for squat (no quality model) it's simply never run.
+  const qualityModelAsset = QUALITY_MODEL_ASSETS[isQualityExercise(exercise) ? exercise : 'pushup'];
+  const tflite = useTensorflowModel(qualityModelAsset, []);
+
+  // The OS only shows the native permission dialog once — after a deny, it
+  // won't pop up again no matter how many times requestPermission() is
+  // called. So: auto-request only while truly undetermined, and otherwise
+  // re-check status whenever the app regains focus, so the prompt clears
+  // itself the moment the user flips it on in Settings and comes back,
+  // without needing to relaunch the app.
+  useEffect(() => {
+    if (permissionStatus === 'not-determined') {
+      Camera.requestCameraPermission().then((result) =>
+        setPermissionStatus(result === 'granted' ? 'granted' : 'denied'),
+      );
+    }
+  }, [permissionStatus]);
 
   useEffect(() => {
-    setCameraReady(true);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setPermissionStatus(Camera.getCameraPermissionStatus());
+    });
+    return () => subscription.remove();
   }, []);
 
-  const pickTip = useCallback(() => {
-    setTip(config.tips[Math.floor(Math.random() * config.tips.length)]);
-  }, [config.tips]);
+  const onPermissionPress = useCallback(() => {
+    if (permissionStatus === 'denied' || permissionStatus === 'restricted') {
+      Linking.openSettings();
+    } else {
+      Camera.requestCameraPermission().then((result) =>
+        setPermissionStatus(result === 'granted' ? 'granted' : 'denied'),
+      );
+    }
+  }, [permissionStatus]);
 
-  // Drive the simulated model output.
-  useEffect(() => {
-    if (phase !== 'active' || !running) return undefined;
+  const reached = count >= quest.target;
+  const accent =
+    phase === 'success'
+      ? Brand.good
+      : phase === 'rejected'
+        ? Brand.bad
+        : feedbackTone === 'bad'
+          ? Brand.warn
+          : reached
+            ? Brand.good
+            : feedbackTone === 'good'
+              ? Brand.good
+              : Brand.textSecondary;
 
-    const id = setInterval(() => {
-      const next = predict();
-      setStatus(next);
-      if (next === 'correct') {
-        setTip(null);
-        setCount((prev) => {
-          if (prev >= quest.target) return prev;
-          const updated = prev + 1;
-          haptic(updated >= quest.target ? 'success' : 'rep');
-          return updated;
-        });
-      } else {
-        pickTip();
+  const finish = useCallback(
+    (didReach: boolean) => {
+      if (finishedRef.current) return;
+      finishedRef.current = true;
+      if (isQualityExercise(exercise)) {
+        setMostCommonIssue(issueTrackerRef.current.mostCommonIssue());
       }
-    }, REP_TICK_MS);
-    return () => clearInterval(id);
-  }, [phase, running, quest.target, pickTip]);
+      if (didReach) {
+        const res = completeQuest(quest.points);
+        setResult(res);
+        setPhase('success');
+        haptic('success');
+      } else {
+        setPhase('rejected');
+        haptic('error');
+      }
+    },
+    [completeQuest, quest.points, exercise],
+  );
+
+  const runQualityInference = useCallback(
+    async (ex: QualityExerciseId, window: Float32Array[]) => {
+      if (tflite.state !== 'loaded') return;
+      try {
+        const outputs = await tflite.model.run([flattenWindow(window).buffer as ArrayBuffer]);
+        const data = new Float32Array(outputs[0]);
+        const quality = decodeQuality(ex, data);
+        issueTrackerRef.current.record(quality.label, GOOD_LABEL[ex]);
+        console.log(
+          `[quality:${ex}]`,
+          quality.label,
+          `${(quality.confidence * 100).toFixed(1)}%`,
+          '—',
+          quality.probs.map((p) => `${p.label}=${(p.prob * 100).toFixed(1)}%`).join(' '),
+        );
+        setLivePrediction(quality);
+        setFeedback(quality.message || config.messages[quality.good ? 'correct' : 'incorrect']);
+        setFeedbackTone(quality.good ? 'good' : 'bad');
+      } catch (err) {
+        console.error(`[quality:${ex}] inference failed`, err);
+      }
+    },
+    [tflite, config.messages],
+  );
+
+  const onResults = useCallback(
+    (result: PoseDetectionResultBundle) => {
+      if (finishedRef.current) return;
+      const landmarks = result.results[0]?.landmarks?.[0] as Landmark[] | undefined;
+      if (!landmarks || !poseVisible(landmarks)) {
+        setFeedback('Step back so your whole body is in frame');
+        setFeedbackTone('idle');
+        return;
+      }
+
+      const update = counterRef.current.update(landmarks);
+      if (update.repCompleted) {
+        setCount(update.reps);
+        // For pushup/lunge the trained quality model owns the feedback text
+        // (updates independently every SEQ_LEN frames, same as final.py's
+        // last_feedback). Squat has no model, so it keeps the geometric form
+        // message final.py also falls back to.
+        if (!isQualityExercise(exercise)) {
+          if (update.formBad) {
+            setFeedback(update.message ?? config.messages.incorrect);
+            setFeedbackTone('bad');
+          } else {
+            setFeedback(config.messages.correct);
+            setFeedbackTone('good');
+          }
+        }
+        haptic(update.formBad ? 'warn' : update.reps >= quest.target ? 'success' : 'rep');
+        if (update.reps >= quest.target) finish(true);
+      }
+
+      if (isQualityExercise(exercise)) {
+        const window = qualityBufferRef.current.push(extractFeatures(landmarks));
+        if (window) void runQualityInference(exercise, window);
+      }
+    },
+    [exercise, quest.target, config.messages, finish, runQualityInference],
+  );
+
+  const onError = useCallback((error: DetectionError) => {
+    console.error('[pose] detection error', error);
+  }, []);
+
+  const poseDetection = usePoseDetection({ onResults, onError }, RunningMode.LIVE_STREAM, POSE_MODEL_FILE, {
+    delegate: Delegate.GPU,
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
 
   const onDone = useCallback(() => {
     if (phase !== 'active') return;
-    if (count >= quest.target) {
-      const res = completeQuest(quest.points);
-      setResult(res);
-      setPhase('success');
-      haptic('success');
-    } else {
-      setPhase('rejected');
-      haptic('error');
-    }
-    setRunning(false);
-  }, [phase, count, quest.target, quest.points, completeQuest]);
+    finish(count >= quest.target);
+  }, [phase, count, quest.target, finish]);
+
+  const onTryAgain = useCallback(() => {
+    counterRef.current = new RepCounter(exercise as RepExerciseId);
+    qualityBufferRef.current = new QualityBuffer();
+    issueTrackerRef.current = new IssueTracker();
+    finishedRef.current = false;
+    setCount(0);
+    setFeedback(config.messages.idle);
+    setFeedbackTone('idle');
+    setResult(null);
+    setMostCommonIssue(null);
+    setLivePrediction(null);
+    setPhase('active');
+  }, [exercise, config.messages]);
 
   const progress = Math.min(count / quest.target, 1);
+
+  const headlineLabel =
+    phase === 'success'
+      ? 'SUCCESS'
+      : phase === 'rejected'
+        ? 'REJECTED'
+        : feedbackTone === 'bad'
+          ? 'FORM'
+          : reached
+            ? 'DONE'
+            : feedbackTone === 'good'
+              ? 'GOOD'
+              : 'READY';
 
   const headline =
     phase === 'success'
@@ -136,21 +294,15 @@ export function WorkoutPreview() {
       : phase === 'rejected'
         ? 'Not enough reps'
         : reached
-          ? 'Target hit — press done'
-          : config.messages[status];
+          ? 'Target hit'
+          : feedback;
 
-  const headlineLabel =
-    phase === 'success' ? 'SUCCESS' : phase === 'rejected' ? 'REJECTED' : status === 'idle' ? 'READY' : status.toUpperCase();
-
-  const headlineColor =
-    phase === 'success' ? Brand.good : phase === 'rejected' ? Brand.bad : reached ? Brand.good : accent;
-
-  const showCamPrompt = cameraReady && !permission?.granted;
+  const showIssueCard = phase !== 'active' && isQualityExercise(exercise);
 
   return (
     <View style={styles.root}>
-      {cameraReady && permission?.granted ? (
-        <CameraView style={StyleSheet.absoluteFill} facing="front" />
+      {hasPermission && device ? (
+        <MediapipeCamera style={StyleSheet.absoluteFill} solution={poseDetection} resizeMode="cover" />
       ) : (
         <View style={styles.mockFeed}>
           <View style={styles.mockFeedGlow} />
@@ -163,7 +315,7 @@ export function WorkoutPreview() {
       <SafeAreaView style={styles.overlay} edges={['top', 'bottom']}>
         <View style={styles.topRow}>
           <View style={styles.statusChip}>
-            <View style={[styles.statusDot, { backgroundColor: headlineColor }]} />
+            <View style={[styles.statusDot, { backgroundColor: accent }]} />
             <Text style={styles.statusChipText}>
               {config.title} · {DIFFICULTY_LABEL[difficulty]}
             </Text>
@@ -173,16 +325,26 @@ export function WorkoutPreview() {
           </Pressable>
         </View>
 
-        {showCamPrompt ? (
-          <Pressable style={styles.camPrompt} onPress={requestPermission}>
-            <Text style={styles.camPromptText}>Enable front camera for live form tracking</Text>
+        {!hasPermission ? (
+          <Pressable style={styles.camPrompt} onPress={onPermissionPress}>
+            <Text style={styles.camPromptText}>
+              {permissionStatus === 'denied' || permissionStatus === 'restricted'
+                ? 'Camera access denied — tap to open Settings and enable it'
+                : 'Enable front camera for live form tracking'}
+            </Text>
           </Pressable>
+        ) : !device ? (
+          <View style={styles.camPrompt}>
+            <Text style={styles.camPromptText}>
+              No camera found — this is expected on the iOS Simulator. Run on a physical device to
+              test the camera.
+            </Text>
+          </View>
         ) : (
           <View style={styles.feedbackWrap}>
-            <View style={[styles.feedbackCard, { borderColor: headlineColor, shadowColor: headlineColor }]}>
-              <Text style={[styles.feedbackLabel, { color: headlineColor }]}>{headlineLabel}</Text>
+            <View style={[styles.feedbackCard, { borderColor: accent, shadowColor: accent }]}>
+              <Text style={[styles.feedbackLabel, { color: accent }]}>{headlineLabel}</Text>
               <Text style={styles.feedbackMessage}>{headline}</Text>
-              {tip && phase === 'active' && !reached ? <Text style={styles.tipText}>Tip: {tip}</Text> : null}
               {phase === 'success' && result ? (
                 <Text style={styles.feedbackPoints}>
                   +{result.pointsAdded} pts{result.streakExtended ? ' · streak extended' : ''}
@@ -197,13 +359,52 @@ export function WorkoutPreview() {
           </View>
         )}
 
+        {showIssueCard ? (
+          <View style={[styles.issueCard, mostCommonIssue ? styles.issueCardWarn : styles.issueCardGood]}>
+            <Text style={[styles.issueKicker, { color: mostCommonIssue ? Brand.warn : Brand.good }]}>
+              {mostCommonIssue ? 'Most common issue' : 'Form check'}
+            </Text>
+            <Text style={styles.issueValue}>
+              {mostCommonIssue ? CLASS_LABEL[mostCommonIssue] ?? mostCommonIssue : 'Clean form the whole set!'}
+            </Text>
+          </View>
+        ) : null}
+
+        {phase === 'active' && isQualityExercise(exercise) && livePrediction ? (
+          <View style={styles.liveCard}>
+            <Text style={styles.liveKicker}>Model output (live)</Text>
+            {livePrediction.probs.map((p) => {
+              const isTop = p.label === livePrediction.label;
+              return (
+                <View key={p.label} style={styles.liveRow}>
+                  <Text style={[styles.liveRowLabel, isTop && styles.liveRowLabelActive]} numberOfLines={1}>
+                    {CLASS_LABEL[p.label] ?? p.label}
+                  </Text>
+                  <View style={styles.liveBarTrack}>
+                    <View
+                      style={[
+                        styles.liveBarFill,
+                        {
+                          width: `${Math.round(p.prob * 100)}%`,
+                          backgroundColor: isTop ? (livePrediction.good ? Brand.good : Brand.warn) : Brand.borderStrong,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.livePct}>{Math.round(p.prob * 100)}%</Text>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
         <View style={styles.bottomCard}>
           <View style={styles.repRow}>
             <Text style={styles.repCount}>{count}</Text>
             <Text style={styles.repTarget}>/ {quest.target} reps</Text>
           </View>
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: headlineColor }]} />
+            <View style={[styles.progressFill, { width: `${progress * 100}%`, backgroundColor: accent }]} />
           </View>
 
           {phase === 'active' && (
@@ -243,15 +444,7 @@ export function WorkoutPreview() {
 
           {phase === 'rejected' && (
             <View style={styles.actionRow}>
-              <Pressable
-                style={styles.primaryBtn}
-                onPress={() => {
-                  setCount(0);
-                  setStatus('idle');
-                  setTip(null);
-                  setRunning(true);
-                  setPhase('active');
-                }}>
+              <Pressable style={styles.primaryBtn} onPress={onTryAgain}>
                 <Text style={styles.primaryBtnText}>Try again</Text>
               </Pressable>
               <Pressable style={styles.ghostBtn} onPress={() => router.back()}>
@@ -344,9 +537,45 @@ const styles = StyleSheet.create({
   },
   feedbackLabel: { fontFamily: Fonts.mono, fontSize: 12, letterSpacing: 2, fontWeight: '700' },
   feedbackMessage: { color: Brand.text, fontSize: 18, lineHeight: 24, fontWeight: '600', textAlign: 'center' },
-  tipText: { color: Brand.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 2 },
   feedbackPoints: { fontFamily: Fonts.mono, color: Brand.accent, fontSize: 15, fontWeight: '700', marginTop: 2 },
   rejectText: { color: Brand.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 2 },
+
+  issueCard: {
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: Brand.radiusLg,
+    borderWidth: 1.5,
+  },
+  issueCardWarn: { backgroundColor: 'rgba(224, 99, 69, 0.14)', borderColor: Brand.warn },
+  issueCardGood: { backgroundColor: 'rgba(90, 154, 130, 0.14)', borderColor: Brand.good },
+  issueKicker: { fontFamily: Fonts.mono, fontSize: 11, letterSpacing: 1.5, textTransform: 'uppercase', fontWeight: '800' },
+  issueValue: { color: Brand.text, fontSize: 17, fontWeight: '800', textAlign: 'center' },
+
+  liveCard: {
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderRadius: Brand.radiusLg,
+    backgroundColor: Overlay.card,
+    borderWidth: 1,
+    borderColor: Overlay.hairline,
+  },
+  liveKicker: {
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    color: Brand.textTertiary,
+    fontWeight: '700',
+  },
+  liveRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  liveRowLabel: { width: 116, color: Brand.textSecondary, fontSize: 12, fontWeight: '600' },
+  liveRowLabelActive: { color: Brand.text, fontWeight: '800' },
+  liveBarTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: 'rgba(236, 233, 226, 0.1)', overflow: 'hidden' },
+  liveBarFill: { height: '100%', borderRadius: 4 },
+  livePct: { width: 38, textAlign: 'right', fontFamily: Fonts.mono, color: Brand.textSecondary, fontSize: 12 },
 
   bottomCard: {
     gap: 14,
